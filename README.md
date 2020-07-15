@@ -1,11 +1,4 @@
-# Loan Calculator Plugin for Wordpress
+# Flutter for wordpress wp plugin
 
-Apply for Loan
------------------------------
-[loancalcapply linkto="#"]
------------------------------
+The wordpress plugin for flutter for wordpress app. Install this plugin before you setup your flutter app.
 
-Loan calculator with submission form
-------------------------------
-[loancalc]
-------------------------------
