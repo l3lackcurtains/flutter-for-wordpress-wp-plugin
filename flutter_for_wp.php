@@ -49,6 +49,42 @@ class FlutterForWordpress
 			10,
 			4
 		);
+
+		// Expose category_image on the /wp/v2/categories REST endpoint
+		add_action('rest_api_init', array($this, 'flutter_register_category_image_field'));
+
+		// Allow Application Passwords over plain HTTP (dev/local only)
+		add_filter('wp_is_application_passwords_available', '__return_true');
+	}
+
+	function flutter_register_category_image_field()
+	{
+		// Register the term meta so it is readable AND writable via REST
+		register_term_meta('category', 'category_image_id', array(
+			'type'              => 'string',
+			'description'       => 'Attachment ID for the category featured image',
+			'single'            => true,
+			'show_in_rest'      => true,
+			'auth_callback'     => function() { return current_user_can('edit_posts'); },
+		));
+
+		// Expose a resolved image URL as a read-only REST field
+		register_rest_field(
+			'category',
+			'category_image',
+			array(
+				'get_callback' => function($term) {
+					$att_id = get_term_meta($term['id'], 'category_image_id', true);
+					if (!$att_id) return '';
+					return wp_get_attachment_image_url((int)$att_id, 'full') ?: '';
+				},
+				'schema' => array(
+					'description' => 'Featured image URL for the category',
+					'type'        => 'string',
+					'context'     => array('view', 'embed'),
+				),
+			)
+		);
 	}
 
 	function flutter_for_wp_rest_allow_anonymous_comments()
@@ -61,10 +97,12 @@ class FlutterForWordpress
 		$_data = $data->data;
 		$_data["custom"]["td_video"] = get_post_meta($post->ID, 'td_post_video', true) ?? '';
 		$_data['custom']["featured_image"] = get_the_post_thumbnail_url($post->ID, "original") ?? '';
+		$_data['custom']["author"]["id"]     = (int) $_data['author'];
 		$_data['custom']["author"]["name"]   = get_author_name($_data['author']);
 		$_data['custom']["author"]["avatar"] = get_avatar_url($_data['author']);
-
-		$_data['custom']["categories"] = get_the_category($_data["id"]);
+		$_data['custom']["categories"]    = get_the_category($_data["id"]);
+		$_data['custom']["comment_count"] = (int) get_comments_number($post->ID);
+		$_data['custom']["view_count"]    = (int) get_post_meta($post->ID, 'post_views_count', true);
 
 		$data->data = $_data;
 
