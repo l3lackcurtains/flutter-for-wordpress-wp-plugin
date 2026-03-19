@@ -24,9 +24,6 @@ class FlutterForWordpress
         // td_post_video meta readable + writable via REST
         add_action('init', array($this, 'register_post_meta'));
 
-        // Increment view count on each REST post fetch
-        add_filter('rest_prepare_post', array($this, 'increment_view_count'), 20, 3);
-
         // Post formats support for the active theme
         add_action('after_setup_theme', array($this, 'add_post_format_support'));
 
@@ -50,13 +47,7 @@ class FlutterForWordpress
             'auth_callback' => function() { return current_user_can('edit_posts'); },
         ));
 
-        register_post_meta('post', 'post_views_count', array(
-            'type'          => 'integer',
-            'description'   => 'Number of times this post has been viewed via REST',
-            'single'        => true,
-            'show_in_rest'  => false,
-            'auth_callback' => '__return_false',
-        ));
+
     }
 
     // -------------------------------------------------------------------------
@@ -121,28 +112,11 @@ class FlutterForWordpress
 
         $_data['custom']['categories']    = get_the_category($post->ID);
         $_data['custom']['comment_count'] = (int) get_comments_number($post->ID);
-        $_data['custom']['view_count']    = (int) get_post_meta($post->ID, 'post_views_count', true);
         $_data['custom']['format']        = get_post_format($post->ID) ?: 'standard';
         $_data['custom']['gallery_images'] = $this->get_gallery_images($post);
         $_data['custom']['audio_url']      = $this->get_audio_url($post);
 
         $data->data = $_data;
-        return $data;
-    }
-
-    // -------------------------------------------------------------------------
-    // View count
-    // -------------------------------------------------------------------------
-
-    function increment_view_count($data, $post, $request)
-    {
-        if ($request->get_method() !== 'GET') return $data;
-        if (!isset($request->get_url_params()['id'])) return $data;
-
-        $count = (int) get_post_meta($post->ID, 'post_views_count', true);
-        update_post_meta($post->ID, 'post_views_count', $count + 1);
-        $data->data['custom']['view_count'] = $count + 1;
-
         return $data;
     }
 
