@@ -27,8 +27,12 @@ class FlutterForWordpress
         // Increment view count on each REST post fetch
         add_filter('rest_prepare_post', array($this, 'increment_view_count'), 20, 3);
 
-        // Enrich OneSignal notification (title, image, postId)
+        // Enrich OneSignal notification content (title, image, postId)
         add_filter('onesignal_send_notification', array($this, 'onesignal_notification_filter'), 10, 2);
+
+        // Gutenberg publishes via REST — $_POST is empty so OneSignal skips sending.
+        // We call onesignal_create_notification() directly, respecting dashboard settings.
+        add_action('wp_after_insert_post', array($this, 'onesignal_gutenberg_fix'), 10, 4);
 
         // Post formats support for the active theme
         add_action('after_setup_theme', array($this, 'add_post_format_support'));
@@ -189,8 +193,48 @@ class FlutterForWordpress
     }
 
     // -------------------------------------------------------------------------
-    // OneSignal notification enrichment
+    // OneSignal: Gutenberg REST fix + notification enrichment
     // -------------------------------------------------------------------------
+
+    /**
+     * Gutenberg publishes via REST so $_POST is empty — OneSignal's
+     * onesignal_schedule_notification() returns early because os_update is unset.
+     *
+     * We hook wp_after_insert_post, check the exact same dashboard settings
+     * (notification_on_post / notification_on_post_update), remove OneSignal's
+     * transition hook to prevent double-sending, then call their function directly.
+     */
+    function onesignal_gutenberg_fix($post_id, $post, $update, $post_before)
+    {
+        if (!defined('REST_REQUEST') || !REST_REQUEST) return;
+        if (wp_is_post_revision($post_id) || wp_is_post_autosave($post_id)) return;
+        if (!function_exists('onesignal_create_notification')) return;
+
+        $s           = get_option('OneSignalWPSetting', array());
+        $is_new      = !$update || ($post_before && $post_before->post_status !== 'publish');
+        $is_update   = $update && $post_before && $post_before->post_status === 'publish';
+        $post_type   = $post->post_type;
+        $post_status = $post->post_status;
+
+        if ($post_status !== 'publish') return;
+
+        $should_send = false;
+        if ($post_type === 'post') {
+            if ($is_new    && !empty($s['notification_on_post']))        $should_send = true;
+            if ($is_update && !empty($s['notification_on_post_update'])) $should_send = true;
+        }
+        if ($post_type === 'page') {
+            if ($is_new    && !empty($s['notification_on_page']))        $should_send = true;
+            if ($is_update && !empty($s['notification_on_page_update'])) $should_send = true;
+        }
+
+        if (!$should_send) return;
+
+        // Remove OneSignal's own hook to prevent double-send
+        remove_action('transition_post_status', 'onesignal_schedule_notification', 10);
+        onesignal_create_notification($post);
+        add_action('transition_post_status', 'onesignal_schedule_notification', 10, 3);
+    }
 
     function onesignal_notification_filter($fields, $post_id)
     {
