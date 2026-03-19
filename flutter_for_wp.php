@@ -110,7 +110,7 @@ class FlutterForWordpress
             get_the_post_thumbnail_url($post->ID, 'full') ?: ''
         );
 
-        $_data['custom']['td_video'] = get_post_meta($post->ID, 'td_post_video', true) ?: '';
+        $_data['custom']['td_post_video'] = $this->get_video_url($post);
 
         $author_id = (int) $_data['author'];
         $_data['custom']['author'] = array(
@@ -124,6 +124,7 @@ class FlutterForWordpress
         $_data['custom']['view_count']    = (int) get_post_meta($post->ID, 'post_views_count', true);
         $_data['custom']['format']        = get_post_format($post->ID) ?: 'standard';
         $_data['custom']['gallery_images'] = $this->get_gallery_images($post);
+        $_data['custom']['audio_url']      = $this->get_audio_url($post);
 
         $data->data = $_data;
         return $data;
@@ -183,6 +184,75 @@ class FlutterForWordpress
     }
 
     // -------------------------------------------------------------------------
+    // Video URL
+    // -------------------------------------------------------------------------
+
+    /**
+     * Resolve video URL for a post:
+     * 1. td_post_video meta (ThemeDev / manual entry)
+     * 2. Gutenberg wp:embed block  <!-- wp:embed {"url":"..."} -->
+     * 3. Classic [video mp4="..."] shortcode
+     * 4. Bare YouTube / Vimeo URL on its own line in the content
+     */
+    private function get_video_url($post)
+    {
+        // 1. ThemeDev meta field
+        $meta = get_post_meta($post->ID, 'td_post_video', true);
+        if (!empty($meta)) return $meta;
+
+        $content = $post->post_content;
+
+        // 2. Gutenberg embed block JSON attribute
+        if (preg_match('/<!--\s*wp:embed\s+({[^}]+})/i', $content, $m)) {
+            $attrs = json_decode($m[1], true);
+            if (!empty($attrs['url'])) return $attrs['url'];
+        }
+
+        // 3. Classic [video mp4="..."] shortcode
+        if (preg_match('/\[video[^\]]+mp4=[\'"]([^\'"]+)[\'"]/i', $content, $m)) {
+            return $m[1];
+        }
+
+        // 4. Bare YouTube / Vimeo URL anywhere in the content
+        if (preg_match(
+            '#https?://(?:www\.)?(?:youtube\.com/watch\S+|youtu\.be/\S+|vimeo\.com/\S+)#i',
+            $content,
+            $m
+        )) {
+            return $m[0];
+        }
+
+        return '';
+    }
+
+    // -------------------------------------------------------------------------
+    // Audio URL
+    // -------------------------------------------------------------------------
+
+    private function get_audio_url($post)
+    {
+        if (get_post_format($post->ID) !== 'audio') return '';
+
+        // Try [audio mp3="..."] shortcode first
+        if (preg_match('/\[audio[^\]]*mp3=[\'"]([^\'"]+)[\'"]/i', $post->post_content, $m)) {
+            return $this->public_url($m[1]);
+        }
+
+        // Fallback: first attached audio file
+        $attachments = get_posts(array(
+            'post_type'      => 'attachment',
+            'post_parent'    => $post->ID,
+            'post_mime_type' => 'audio',
+            'posts_per_page' => 1,
+        ));
+        if (!empty($attachments)) {
+            return $this->public_url(wp_get_attachment_url($attachments[0]->ID) ?: '');
+        }
+
+        return '';
+    }
+
+    // -------------------------------------------------------------------------
     // OneSignal notification enrichment
     // -------------------------------------------------------------------------
 
@@ -195,17 +265,19 @@ class FlutterForWordpress
      */
     function onesignal_notification_filter($fields, $post_id)
     {
-        $thumb_id = get_post_thumbnail_id($post_id);
-        if (!$thumb_id) return $fields;
-
-        $full   = $this->public_url(wp_get_attachment_image_url($thumb_id, 'full')   ?: '');
-        $medium = $this->public_url(wp_get_attachment_image_url($thumb_id, 'medium') ?: '');
-
-        if ($full)   { $fields['big_picture'] = $full; $fields['ios_attachments'] = array('id' => $full); }
-        if ($medium) { $fields['large_icon']  = $medium; }
-
-        // Pass postId so Flutter app can deep-link to the article
+        // Remove URL fields — they trigger Android's "Open with" chooser.
+        // Flutter app handles navigation internally via data.postId.
+        unset($fields['url'], $fields['web_url'], $fields['app_url']);
         $fields['data'] = array('postId' => $post_id);
+
+        // Add featured image if the post has one
+        $thumb_id = get_post_thumbnail_id($post_id);
+        if ($thumb_id) {
+            $full   = $this->public_url(wp_get_attachment_image_url($thumb_id, 'full')   ?: '');
+            $medium = $this->public_url(wp_get_attachment_image_url($thumb_id, 'medium') ?: '');
+            if ($full)   { $fields['big_picture'] = $full; $fields['ios_attachments'] = array('id' => $full); }
+            if ($medium) { $fields['large_icon']  = $medium; }
+        }
 
         return $fields;
     }
