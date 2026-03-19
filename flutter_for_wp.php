@@ -27,19 +27,17 @@ class FlutterForWordpress
         // Increment view count on each REST post fetch
         add_filter('rest_prepare_post', array($this, 'increment_view_count'), 20, 3);
 
-        // Enrich OneSignal notification content (title, image, postId)
-        add_filter('onesignal_send_notification', array($this, 'onesignal_notification_filter'), 10, 2);
-
-        // Gutenberg publishes via REST — $_POST is empty so OneSignal skips sending.
-        // We call onesignal_create_notification() directly, respecting dashboard settings.
-        add_action('wp_after_insert_post', array($this, 'onesignal_gutenberg_fix'), 10, 4);
-
         // Post formats support for the active theme
         add_action('after_setup_theme', array($this, 'add_post_format_support'));
+
+        // Add featured image + postId to OneSignal notifications
+        // Uses the official onesignal_send_notification filter (v3 signature)
+        // See: https://documentation.onesignal.com/docs/wordpress#can-i-modify-the-notification-parameters-before-sending
+        add_filter('onesignal_send_notification', array($this, 'onesignal_notification_filter'), 10, 2);
     }
 
     // -------------------------------------------------------------------------
-    // Post meta registration
+    // Post meta
     // -------------------------------------------------------------------------
 
     function register_post_meta()
@@ -90,8 +88,7 @@ class FlutterForWordpress
             'get_callback' => function($term) {
                 $att_id = (int) get_term_meta($term['id'], 'category_image_id', true);
                 if (!$att_id) return '';
-                $url = wp_get_attachment_image_url($att_id, 'full') ?: '';
-                return $this->public_url($url);
+                return $this->public_url(wp_get_attachment_image_url($att_id, 'full') ?: '');
             },
             'schema' => array(
                 'description' => 'Featured image URL for the category',
@@ -125,11 +122,7 @@ class FlutterForWordpress
         $_data['custom']['categories']    = get_the_category($post->ID);
         $_data['custom']['comment_count'] = (int) get_comments_number($post->ID);
         $_data['custom']['view_count']    = (int) get_post_meta($post->ID, 'post_views_count', true);
-
-        // Post format: standard | gallery | video | quote | audio | image | link
-        $_data['custom']['format'] = get_post_format($post->ID) ?: 'standard';
-
-        // Gallery images (full-size, public URLs)
+        $_data['custom']['format']        = get_post_format($post->ID) ?: 'standard';
         $_data['custom']['gallery_images'] = $this->get_gallery_images($post);
 
         $data->data = $_data;
@@ -142,14 +135,11 @@ class FlutterForWordpress
 
     function increment_view_count($data, $post, $request)
     {
-        // Only count single-post GET requests, not collection requests
         if ($request->get_method() !== 'GET') return $data;
         if (!isset($request->get_url_params()['id'])) return $data;
 
         $count = (int) get_post_meta($post->ID, 'post_views_count', true);
         update_post_meta($post->ID, 'post_views_count', $count + 1);
-
-        // Also update the value we already put in the response
         $data->data['custom']['view_count'] = $count + 1;
 
         return $data;
@@ -193,69 +183,28 @@ class FlutterForWordpress
     }
 
     // -------------------------------------------------------------------------
-    // OneSignal: Gutenberg REST fix + notification enrichment
+    // OneSignal notification enrichment
     // -------------------------------------------------------------------------
 
     /**
-     * Gutenberg publishes via REST so $_POST is empty — OneSignal's
-     * onesignal_schedule_notification() returns early because os_update is unset.
+     * Adds featured image to the notification.
+     * Title and body are already set by OneSignal using the site name and post title.
+     * When/whether to send is fully controlled by the OneSignal dashboard settings.
      *
-     * We hook wp_after_insert_post, check the exact same dashboard settings
-     * (notification_on_post / notification_on_post_update), remove OneSignal's
-     * transition hook to prevent double-sending, then call their function directly.
+     * @see https://documentation.onesignal.com/docs/wordpress#can-i-modify-the-notification-parameters-before-sending
      */
-    function onesignal_gutenberg_fix($post_id, $post, $update, $post_before)
-    {
-        if (!defined('REST_REQUEST') || !REST_REQUEST) return;
-        if (wp_is_post_revision($post_id) || wp_is_post_autosave($post_id)) return;
-        if (!function_exists('onesignal_create_notification')) return;
-
-        $s           = get_option('OneSignalWPSetting', array());
-        $is_new      = !$update || ($post_before && $post_before->post_status !== 'publish');
-        $is_update   = $update && $post_before && $post_before->post_status === 'publish';
-        $post_type   = $post->post_type;
-        $post_status = $post->post_status;
-
-        if ($post_status !== 'publish') return;
-
-        $should_send = false;
-        if ($post_type === 'post') {
-            if ($is_new    && !empty($s['notification_on_post']))        $should_send = true;
-            if ($is_update && !empty($s['notification_on_post_update'])) $should_send = true;
-        }
-        if ($post_type === 'page') {
-            if ($is_new    && !empty($s['notification_on_page']))        $should_send = true;
-            if ($is_update && !empty($s['notification_on_page_update'])) $should_send = true;
-        }
-
-        if (!$should_send) return;
-
-        // Remove OneSignal's own hook to prevent double-send
-        remove_action('transition_post_status', 'onesignal_schedule_notification', 10);
-        onesignal_create_notification($post);
-        add_action('transition_post_status', 'onesignal_schedule_notification', 10, 3);
-    }
-
     function onesignal_notification_filter($fields, $post_id)
     {
-        $post = get_post($post_id);
-        if (!$post) return $fields;
-
-        // Heading: site name  |  Body: post title
-        $fields['headings'] = array('en' => get_bloginfo('name'));
-        $fields['contents'] = array('en' => $post->post_title);
-
-        // Featured image
         $thumb_id = get_post_thumbnail_id($post_id);
-        if ($thumb_id) {
-            $full   = $this->public_url(wp_get_attachment_image_url($thumb_id, 'full')   ?: '');
-            $medium = $this->public_url(wp_get_attachment_image_url($thumb_id, 'medium') ?: '');
-            if ($full)   { $fields['big_picture'] = $full; $fields['ios_attachments'] = array('id' => $full); }
-            if ($medium) { $fields['large_icon']  = $medium; }
-        }
+        if (!$thumb_id) return $fields;
 
-        // postId for Flutter deep-link; strip URL fields to avoid Android browser chooser
-        unset($fields['url'], $fields['web_url'], $fields['app_url']);
+        $full   = $this->public_url(wp_get_attachment_image_url($thumb_id, 'full')   ?: '');
+        $medium = $this->public_url(wp_get_attachment_image_url($thumb_id, 'medium') ?: '');
+
+        if ($full)   { $fields['big_picture'] = $full; $fields['ios_attachments'] = array('id' => $full); }
+        if ($medium) { $fields['large_icon']  = $medium; }
+
+        // Pass postId so Flutter app can deep-link to the article
         $fields['data'] = array('postId' => $post_id);
 
         return $fields;
@@ -266,8 +215,8 @@ class FlutterForWordpress
     // -------------------------------------------------------------------------
 
     /**
-     * Replace the internal WordPress siteurl (may be localhost in Docker) with
-     * the public-facing URL defined in the WORDPRESS_SITE_URL env variable.
+     * Replace internal siteurl (may be localhost in Docker) with the
+     * public-facing URL from the WORDPRESS_SITE_URL environment variable.
      */
     private function public_url($url)
     {
