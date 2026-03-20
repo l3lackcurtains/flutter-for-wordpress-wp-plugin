@@ -12,6 +12,15 @@ class FlutterForWordpress
 {
     function __construct()
     {
+        // CORS is handled by WordPress REST API natively.
+        // Only handle OPTIONS preflight to ensure it returns 200.
+        add_action('init', function() {
+            if ('OPTIONS' === $_SERVER['REQUEST_METHOD']) {
+                status_header(200);
+                exit();
+            }
+        });
+
         // Custom fields on post REST response
         add_filter('rest_prepare_post', array($this, 'custom_rest_fields'), 10, 3);
 
